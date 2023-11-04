@@ -1,0 +1,445 @@
+use std::f32::consts::PI;
+
+use bevy::prelude::*;
+use bevy::sprite::MaterialMesh2dBundle;
+use num::clamp;
+use rand::distributions::{Distribution, Uniform};
+use rand::Rng;
+
+// TODO
+// v bug: hit on dice can lead to ball leaking through wall
+// * add main menu
+// * add game restart
+// * add scores
+// * add screen margin and fix window size
+// * add window scaling
+// * add ball loose effect
+// * add difficulty selector
+// * add ai player
+// * add mouse play mode
+
+fn main() {
+    let board = BoardConfig {
+        ball_speed: 400.,
+        width: 1000.,
+        height: 700.,
+        dice_width: 40.,
+        dice_length: 150.,
+        dice_offset: 100.,
+        ball_radius: 20.,
+        border_width: 20.,
+    };
+
+    App::new()
+        .insert_resource(ClearColor(Color::rgb(0.6, 0.6, 0.6)))
+        .insert_resource(board)
+        .add_plugins(DefaultPlugins)
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                handle_input,
+                update_dices,
+                update_ball,
+                update_dice_animation,
+            ),
+        )
+        .run();
+}
+
+#[derive(Component)]
+struct Dice {
+    axis_input: f32,
+    kind: DiceKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiceKind {
+    Left,
+    Right,
+}
+
+#[derive(Component)]
+struct AnimatedDiceBounce {
+    speed: f32,
+    original_x: f32,
+    max_offset: f32,
+    offset_reached: bool,
+}
+
+impl AnimatedDiceBounce {
+    pub fn with_dice(dice_x: f32) -> Self {
+        Self {
+            speed: 300.0,
+            original_x: dice_x,
+            max_offset: 5.0,
+            offset_reached: false,
+        }
+    }
+}
+
+#[derive(Resource)]
+struct Score {
+    left: usize,
+    right: usize,
+}
+
+const MAX_BOUNCE_ANGLE: f32 = 5. * PI / 12.;
+const INPUT_FACTOR: f32 = 1000.;
+const BALL_COLOR: Color = Color::RED;
+
+#[derive(Resource)]
+struct BoardConfig {
+    /// board dimension from left to right
+    width: f32,
+    /// board dimensions from top to bottom
+    height: f32,
+    /// dice visual thickness
+    dice_width: f32,
+    /// area of dice hit surface
+    dice_length: f32,
+    /// offset from board edge to dice axis
+    dice_offset: f32,
+    /// speed of ball travel
+    ball_speed: f32,
+    /// visual radius of ball
+    ball_radius: f32,
+    /// visual width of surrounding walls
+    border_width: f32,
+}
+
+impl BoardConfig {
+    pub fn max_dice_position(&self, is_top: bool) -> f32 {
+        let offset = self.height / 2. - self.dice_length / 2.;
+        if is_top {
+            offset
+        } else {
+            -offset
+        }
+    }
+}
+
+#[derive(Component)]
+struct Ball {
+    is_colliding_y: bool,
+    is_colliding_x: bool,
+    is_lost: bool,
+    velocity_x: f32,
+    velocity_y: f32,
+}
+
+fn spawn_border(commands: &mut Commands, width: f32, height: f32, position: Vec2) {
+    commands.spawn(SpriteBundle {
+        sprite: Sprite {
+            color: Color::BLACK,
+            custom_size: Some(Vec2::new(width, height)),
+            ..default()
+        },
+        transform: Transform::from_translation(Vec3::new(position.x, position.y, 0.)),
+        ..default()
+    });
+}
+
+fn spawn_dice(commands: &mut Commands, kind: DiceKind, board: &BoardConfig) {
+    let position_x = match kind {
+        DiceKind::Left => {
+            -board.width / 2. + board.dice_offset - board.ball_radius - board.dice_width / 2.
+        }
+        DiceKind::Right => {
+            board.width / 2. - board.dice_offset + board.ball_radius + board.dice_width / 2.
+        }
+    };
+    commands.spawn((
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::rgb(0.25, 0.25, 0.75),
+                custom_size: Some(Vec2::new(board.dice_width, board.dice_length)),
+                ..default()
+            },
+            transform: Transform::from_translation(Vec3::new(position_x, 0., 0.)),
+            ..default()
+        },
+        Dice {
+            axis_input: 0.0,
+            kind,
+        },
+    ));
+}
+
+fn spawn_ball(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+    board: &BoardConfig,
+) {
+    let ball_starting_angle = get_random_starting_angle();
+    commands.spawn((
+        MaterialMesh2dBundle {
+            mesh: meshes
+                .add(shape::Circle::new(board.ball_radius).into())
+                .into(),
+            material: materials.add(ColorMaterial::from(BALL_COLOR)),
+            transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
+            ..default()
+        },
+        Ball {
+            is_colliding_x: false,
+            is_colliding_y: false,
+            is_lost: false,
+            velocity_x: ball_starting_angle.x,
+            velocity_y: ball_starting_angle.y,
+        },
+    ));
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    board: Res<BoardConfig>,
+) {
+    commands.spawn(Camera2dBundle::default());
+
+    let border_width = board.border_width;
+    spawn_border(
+        &mut commands,
+        board.width + border_width * 2.,
+        border_width,
+        Vec2::new(0., board.height / 2. + border_width / 2.),
+    );
+    spawn_border(
+        &mut commands,
+        board.width + border_width * 2.,
+        border_width,
+        Vec2::new(0., -board.height / 2. - border_width / 2.),
+    );
+    spawn_border(
+        &mut commands,
+        border_width,
+        board.height + border_width * 2.,
+        Vec2::new(board.width / 2. + border_width / 2., 0.),
+    );
+    spawn_border(
+        &mut commands,
+        border_width,
+        board.height + border_width * 2.,
+        Vec2::new(-board.width / 2. - border_width / 2., 0.),
+    );
+
+    spawn_dice(&mut commands, DiceKind::Left, &board);
+    spawn_dice(&mut commands, DiceKind::Right, &board);
+    spawn_ball(&mut commands, &mut meshes, &mut materials, &board);
+
+    // commands.spawn(MaterialMesh2dBundle {
+    //     mesh: meshes.add(shape::Quad::new(Vec2::new(50., 100.)).into()).into(),
+    //     material: materials.add(ColorMaterial::from(Color::LIME_GREEN)),
+    //     transform: Transform::from_translation(Vec3::new(50., 0., 0.)),
+    //     ..default()
+    // });
+    //
+    // commands.spawn(MaterialMesh2dBundle {
+    //     mesh: meshes.add(shape::RegularPolygon::new(50., 6).into()).into(),
+    //     material: materials.add(ColorMaterial::from(Color::TURQUOISE)),
+    //     transform: Transform::from_translation(Vec3::new(150., 0., 0.)),
+    //     ..default()
+    // });
+}
+
+fn handle_input(mut dices: Query<(&mut Dice)>, keyboard: Res<Input<KeyCode>>) {
+    let mut left_input = 0.0;
+    if keyboard.pressed(KeyCode::W) {
+        left_input += 1.0;
+    }
+    if keyboard.pressed(KeyCode::S) {
+        left_input -= 1.0;
+    }
+
+    let mut right_input = 0.0;
+    if keyboard.pressed(KeyCode::Up) {
+        right_input += 1.0;
+    }
+    if keyboard.pressed(KeyCode::Down) {
+        right_input -= 1.0;
+    }
+
+    for (mut dice) in &mut dices {
+        match dice.kind {
+            DiceKind::Right => dice.axis_input = right_input,
+            DiceKind::Left => dice.axis_input = left_input,
+        }
+    }
+}
+
+fn update_dices(
+    time: Res<Time>,
+    board: Res<BoardConfig>,
+    mut dices: Query<(&Dice, &mut Transform)>,
+) {
+    let dt = time.delta().as_secs_f32();
+    let top_y_limit = board.max_dice_position(true);
+    let bottom_y_limit = board.max_dice_position(false);
+
+    for (dice, mut transform) in &mut dices {
+        transform.translation.y += dt * dice.axis_input * INPUT_FACTOR;
+        transform.translation.y = clamp(transform.translation.y, bottom_y_limit, top_y_limit);
+    }
+}
+
+fn get_random_starting_angle() -> Vec2 {
+    let step = Uniform::new(-1.0, 1.0);
+    let mut rng = rand::thread_rng();
+    let swing = step.sample(&mut rng);
+    let is_right = rng.gen::<bool>();
+    let bounce_angle = swing * MAX_BOUNCE_ANGLE;
+    if is_right {
+        return Vec2::new(-bounce_angle.cos(), -bounce_angle.sin());
+    } else {
+        return Vec2::new(bounce_angle.cos(), -bounce_angle.sin());
+    }
+}
+
+// returns normalized ball velocity
+fn calculate_dice_collision(
+    ball_y: f32,
+    quarter_ball: f32,
+    dice_y: f32,
+    half_dice: f32,
+    kind: DiceKind,
+) -> Option<Vec2> {
+    let upper_edge = dice_y + half_dice + quarter_ball;
+    let lower_edge = dice_y - half_dice - quarter_ball;
+    if ball_y <= upper_edge && ball_y >= lower_edge {
+        let ball_shift = (dice_y - ball_y) / (half_dice + quarter_ball);
+        let bounce_angle = ball_shift * MAX_BOUNCE_ANGLE;
+        let new_v = match kind {
+            DiceKind::Right => Vec2::new(-bounce_angle.cos(), -bounce_angle.sin()),
+            DiceKind::Left => Vec2::new(bounce_angle.cos(), -bounce_angle.sin()),
+        };
+        return Some(new_v);
+    }
+    None
+}
+
+fn update_ball(
+    mut commands: Commands,
+    time: Res<Time>,
+    board: Res<BoardConfig>,
+    mut ball: Query<(Entity, &mut Ball, &mut Transform), Without<Dice>>,
+    mut dices: Query<(Entity, &Transform, &Dice), With<Dice>>,
+) {
+    let dt = time.delta().as_secs_f32();
+
+    if let Ok((entity, mut ball, mut transform)) = ball.get_single_mut() {
+        transform.translation.x += ball.velocity_x * dt * board.ball_speed;
+        transform.translation.y += ball.velocity_y * dt * board.ball_speed;
+        let (ball_x, ball_y) = (transform.translation.x, transform.translation.y);
+
+        let top_y = board.height / 2. - board.ball_radius;
+        let bottom_y = -board.height / 2. + board.ball_radius;
+        let dice_axis_left = -board.width / 2. + board.dice_offset;
+        let dice_axis_right = board.width / 2. - board.dice_offset;
+        if !ball.is_colliding_x {
+            let half_dice = board.dice_length / 2.;
+            let over_right_axis = ball_x > dice_axis_right;
+            let over_left_axis = ball_x < dice_axis_left;
+            if (over_left_axis || over_right_axis) && !ball.is_lost {
+                let check_dice = match (over_right_axis, over_left_axis) {
+                    (true, false) => DiceKind::Right,
+                    (false, true) => DiceKind::Left,
+                    _ => unreachable!(),
+                };
+                for (entity, transform, dice) in dices.iter() {
+                    if dice.kind == check_dice {
+                        let dice_x = transform.translation.x;
+                        let dice_y = transform.translation.y;
+                        let quarter_ball = board.ball_radius / 2.;
+                        if let Some(new_v) = calculate_dice_collision(
+                            ball_y,
+                            quarter_ball,
+                            dice_y,
+                            half_dice,
+                            dice.kind,
+                        ) {
+                            ball.velocity_x = new_v.x;
+                            ball.velocity_y = new_v.y;
+                            ball.is_colliding_x = true;
+                            commands
+                                .entity(entity)
+                                .insert(AnimatedDiceBounce::with_dice(dice_x));
+                        } else {
+                            ball.is_lost = true;
+                        }
+                    }
+                }
+            }
+        } else {
+            if ball_x > dice_axis_left && ball_x < dice_axis_right {
+                ball.is_colliding_x = false;
+            }
+        }
+        if !ball.is_colliding_y {
+            if ball_y > top_y || ball_y < bottom_y {
+                ball.velocity_y *= -1.;
+                ball.is_colliding_y = true;
+            }
+        } else {
+            if ball_y < top_y && ball_y > bottom_y {
+                ball.is_colliding_y = false;
+            }
+        }
+        if ball.is_lost {
+            if ball_x > board.width / 2. {
+                println!("RIGHT LOST");
+                commands.entity(entity).despawn();
+            }
+            if ball_x < -board.width / 2. {
+                println!("LEFT LOST");
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+}
+
+fn update_dice_animation(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut Transform, &Dice, &mut AnimatedDiceBounce)>,
+) {
+    let dt = time.delta().as_secs_f32();
+    for (entity, mut transform, dice, mut anim) in query.iter_mut() {
+        let dice_x = &mut transform.translation.x;
+        if !anim.offset_reached {
+            match dice.kind {
+                DiceKind::Right => {
+                    *dice_x += dt * anim.speed;
+                    if *dice_x > anim.original_x + anim.max_offset {
+                        anim.offset_reached = true;
+                    }
+                }
+                DiceKind::Left => {
+                    *dice_x -= dt * anim.speed;
+                    if *dice_x < anim.original_x - anim.max_offset {
+                        anim.offset_reached = true;
+                    }
+                }
+            }
+        } else {
+            match dice.kind {
+                DiceKind::Right => {
+                    *dice_x -= dt * anim.speed;
+                    if *dice_x <= anim.original_x {
+                        *dice_x = anim.original_x;
+                        commands.entity(entity).remove::<AnimatedDiceBounce>();
+                    }
+                }
+                DiceKind::Left => {
+                    *dice_x += dt * anim.speed;
+                    if *dice_x >= anim.original_x {
+                        *dice_x = anim.original_x;
+                        commands.entity(entity).remove::<AnimatedDiceBounce>();
+                    }
+                }
+            }
+        }
+    }
+}
