@@ -1,12 +1,9 @@
-use std::f32::consts::PI;
-
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use num::clamp;
-use rand::distributions::{Distribution, Uniform};
-use rand::Rng;
 
-use crate::GameState;
+use crate::utils::*;
+use crate::{GameState, LastWinner};
 
 pub struct GameplayPlugin;
 
@@ -21,6 +18,8 @@ impl Plugin for GameplayPlugin {
             dice_offset: 100.,
             ball_radius: 20.,
             border_width: 20.,
+            winning_score: 2,
+            start_delay: 1.5,
         };
 
         app.insert_resource(board)
@@ -36,6 +35,7 @@ impl Plugin for GameplayPlugin {
                     update_ball,
                     update_dice_animation,
                     next_round,
+                    update_delayed_ball_start,
                 ),
             );
     }
@@ -48,12 +48,6 @@ struct BoardTag;
 struct Dice {
     axis_input: f32,
     kind: DiceKind,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DiceKind {
-    Left,
-    Right,
 }
 
 #[derive(Component)]
@@ -99,7 +93,6 @@ impl Score {
     }
 }
 
-const MAX_BOUNCE_ANGLE: f32 = 5. * PI / 12.;
 const INPUT_FACTOR: f32 = 1000.;
 const BALL_COLOR: Color = Color::RED;
 
@@ -121,6 +114,10 @@ struct BoardConfig {
     ball_radius: f32,
     /// visual width of surrounding walls
     border_width: f32,
+    /// score for one player to win the game
+    winning_score: usize,
+    /// secs before ball is launched
+    start_delay: f32,
 }
 
 impl BoardConfig {
@@ -134,13 +131,19 @@ impl BoardConfig {
     }
 }
 
-#[derive(Component)]
+#[derive(Default, Component)]
 struct Ball {
     is_colliding_y: bool,
     is_colliding_x: bool,
     is_lost: bool,
     velocity_x: f32,
     velocity_y: f32,
+}
+
+impl Ball {
+    pub fn reset(&mut self) {
+        *self = Ball::default();
+    }
 }
 
 #[derive(Event)]
@@ -196,7 +199,6 @@ fn spawn_ball(
     materials: &mut ResMut<Assets<ColorMaterial>>,
     board: &BoardConfig,
 ) -> Entity {
-    let ball_starting_angle = get_random_starting_angle();
     commands
         .spawn((
             MaterialMesh2dBundle {
@@ -207,13 +209,8 @@ fn spawn_ball(
                 transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
                 ..default()
             },
-            Ball {
-                is_colliding_x: false,
-                is_colliding_y: false,
-                is_lost: false,
-                velocity_x: ball_starting_angle.x,
-                velocity_y: ball_starting_angle.y,
-            },
+            Ball::default(),
+            DelayedBallStart::new(board.start_delay),
         ))
         .id()
 }
@@ -222,8 +219,10 @@ fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut score: ResMut<Score>,
     board: Res<BoardConfig>,
 ) {
+    score.reset();
     let border_width = board.border_width;
     let border_top = spawn_border(
         &mut commands,
@@ -271,8 +270,11 @@ fn despawn_board(mut commands: Commands, entities: Query<Entity, With<BoardTag>>
 fn next_round(
     mut commands: Commands,
     mut score: ResMut<Score>,
+    board: Res<BoardConfig>,
     mut event_reader: EventReader<PlayerLost>,
-    mut ball: Query<(&mut Ball, &mut Transform)>,
+    mut ball: Query<(Entity, &mut Ball, &mut Transform)>,
+    mut next_state: ResMut<NextState<GameState>>,
+    mut last_winner: ResMut<LastWinner>,
 ) {
     if let Some(PlayerLost { is_right }) = event_reader.iter().next() {
         if *is_right {
@@ -281,19 +283,25 @@ fn next_round(
             score.right += 1;
         }
 
-        let (mut ball, mut transform) = ball.single_mut();
+        let (entity, mut ball, mut transform) = ball.single_mut();
         transform.translation.x = 0.0;
         transform.translation.y = 0.0;
-        let angle = get_random_starting_angle();
-        ball.velocity_x = angle.x;
-        ball.velocity_y = angle.y;
-        ball.is_colliding_x = false;
-        ball.is_colliding_y = false;
-        ball.is_lost = false;
+        ball.reset();
+        commands
+            .entity(entity)
+            .insert(DelayedBallStart::new(board.start_delay));
+
+        if score.left >= board.winning_score {
+            last_winner.player = Some(DiceKind::Left);
+            next_state.set(GameState::GameOver)
+        } else if score.right >= board.winning_score {
+            last_winner.player = Some(DiceKind::Right);
+            next_state.set(GameState::GameOver)
+        }
     }
 }
 
-fn handle_input(mut dices: Query<(&mut Dice)>, keyboard: Res<Input<KeyCode>>) {
+fn handle_input(mut dices: Query<&mut Dice>, keyboard: Res<Input<KeyCode>>) {
     let mut left_input = 0.0;
     if keyboard.pressed(KeyCode::W) {
         left_input += 1.0;
@@ -310,7 +318,7 @@ fn handle_input(mut dices: Query<(&mut Dice)>, keyboard: Res<Input<KeyCode>>) {
         right_input -= 1.0;
     }
 
-    for (mut dice) in &mut dices {
+    for mut dice in &mut dices {
         match dice.kind {
             DiceKind::Right => dice.axis_input = right_input,
             DiceKind::Left => dice.axis_input = left_input,
@@ -330,19 +338,6 @@ fn update_dices(
     for (dice, mut transform) in &mut dices {
         transform.translation.y += dt * dice.axis_input * INPUT_FACTOR;
         transform.translation.y = clamp(transform.translation.y, bottom_y_limit, top_y_limit);
-    }
-}
-
-fn get_random_starting_angle() -> Vec2 {
-    let step = Uniform::new(-1.0, 1.0);
-    let mut rng = rand::thread_rng();
-    let swing = step.sample(&mut rng);
-    let is_right = rng.gen::<bool>();
-    let bounce_angle = swing * MAX_BOUNCE_ANGLE;
-    if is_right {
-        return Vec2::new(-bounce_angle.cos(), -bounce_angle.sin());
-    } else {
-        return Vec2::new(bounce_angle.cos(), -bounce_angle.sin());
     }
 }
 
@@ -372,13 +367,13 @@ fn update_ball(
     mut commands: Commands,
     time: Res<Time>,
     board: Res<BoardConfig>,
-    mut ball: Query<(Entity, &mut Ball, &mut Transform), Without<Dice>>,
-    mut dices: Query<(Entity, &Transform, &Dice), With<Dice>>,
+    mut ball: Query<(&mut Ball, &mut Transform), Without<Dice>>,
+    dices: Query<(Entity, &Transform, &Dice), With<Dice>>,
     mut event_writer: EventWriter<PlayerLost>,
 ) {
     let dt = time.delta().as_secs_f32();
 
-    if let Ok((entity, mut ball, mut transform)) = ball.get_single_mut() {
+    if let Ok((mut ball, mut transform)) = ball.get_single_mut() {
         transform.translation.x += ball.velocity_x * dt * board.ball_speed;
         transform.translation.y += ball.velocity_y * dt * board.ball_speed;
         let (ball_x, ball_y) = (transform.translation.x, transform.translation.y);
@@ -487,6 +482,23 @@ fn update_dice_animation(
                     }
                 }
             }
+        }
+    }
+}
+
+fn update_delayed_ball_start(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Ball, &mut DelayedBallStart)>,
+) {
+    if let Ok((entity, mut ball, mut delay)) = query.get_single_mut() {
+        let dt = time.delta().as_secs_f32();
+        delay.remaining_sec -= dt;
+        if delay.remaining_sec < 0.0 {
+            let angle = get_random_starting_angle();
+            ball.velocity_x = angle.x;
+            ball.velocity_y = angle.y;
+            commands.entity(entity).remove::<DelayedBallStart>();
         }
     }
 }

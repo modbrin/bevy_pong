@@ -1,9 +1,8 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 
+use crate::utils::*;
 use crate::GameState;
-
-static FONT_PATH: &str = "fonts/Minimal5x7.ttf";
 
 pub struct MainMenuPlugin;
 
@@ -18,12 +17,13 @@ pub struct QuitButton;
 
 impl Plugin for MainMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::MainMenu), spawn_main_menu)
+        app.add_systems(OnEnter(GameState::MainMenu), spawn_menu)
+            .add_systems(OnExit(GameState::MainMenu), despawn_menu)
             .add_systems(Update, (play_button_clicked, quit_button_clicked));
     }
 }
 
-fn spawn_main_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
     let start_button = spawn_button(&mut commands, &asset_server, "PvP", Color::LIME_GREEN);
     commands.entity(start_button).insert(StartButton);
 
@@ -64,57 +64,17 @@ fn spawn_main_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
         .add_child(quit_button);
 }
 
-fn spawn_button(
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-    text: &str,
-    color: Color,
-) -> Entity {
-    commands
-        .spawn(ButtonBundle {
-            style: Style {
-                height: Val::Percent(15.0),
-                width: Val::Percent(65.0),
-                align_self: AlignSelf::Center,
-                justify_content: JustifyContent::Center,
-                margin: UiRect::all(Val::Percent(2.0)),
-                ..default()
-            },
-            background_color: color.into(),
-            ..default()
-        })
-        .with_children(|commands| {
-            commands.spawn(TextBundle {
-                style: Style {
-                    align_self: AlignSelf::Center,
-                    margin: UiRect::all(Val::Percent(3.0)),
-                    ..default()
-                },
-                text: Text::from_section(
-                    text,
-                    TextStyle {
-                        font: asset_server.load(FONT_PATH),
-                        font_size: 64.0,
-                        color: Color::BLACK,
-                    },
-                ),
-                ..default()
-            });
-        })
-        .id()
+fn despawn_menu(mut commands: Commands, menu_root: Query<Entity, With<MenuUIRoot>>) {
+    let root_entity = menu_root.single();
+    commands.entity(root_entity).despawn_recursive();
 }
 
 fn play_button_clicked(
-    mut commands: Commands,
     interactions: Query<&Interaction, (With<StartButton>, Changed<Interaction>)>,
-    menu_root: Query<Entity, With<MenuUIRoot>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
     for interaction in &interactions {
         if matches!(interaction, Interaction::Pressed) {
-            let root_entity = menu_root.single();
-            commands.entity(root_entity).despawn_recursive();
-
             next_state.set(GameState::Gameplay);
         }
     }
