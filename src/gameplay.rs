@@ -18,7 +18,7 @@ impl Plugin for GameplayPlugin {
             dice_offset: 100.,
             ball_radius: 20.,
             border_width: 20.,
-            winning_score: 2,
+            winning_score: 10,
             start_delay: 1.5,
         };
 
@@ -43,6 +43,9 @@ impl Plugin for GameplayPlugin {
 
 #[derive(Component)]
 struct BoardTag;
+
+#[derive(Component)]
+struct ScoreTextTag;
 
 #[derive(Component)]
 struct Dice {
@@ -90,6 +93,10 @@ impl Score {
     pub fn reset(&mut self) {
         self.left = 0;
         self.right = 0;
+    }
+
+    pub fn as_text(&self) -> String {
+        format!("{}:{}", self.left, self.right)
     }
 }
 
@@ -215,10 +222,45 @@ fn spawn_ball(
         .id()
 }
 
+fn spawn_score_text(commands: &mut Commands, asset_server: &mut AssetServer, score: &Score) {
+    commands
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Percent(40.0),
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            ..default()
+        })
+        .insert(BoardTag)
+        .with_children(|parent| {
+            parent
+                .spawn(TextBundle {
+                    style: Style {
+                        align_self: AlignSelf::Center,
+                        ..default()
+                    },
+                    text: Text::from_section(
+                        &score.as_text(),
+                        TextStyle {
+                            font: asset_server.load(FONT_PATH),
+                            font_size: 96.0,
+                            color: Color::DARK_GRAY,
+                        },
+                    ),
+                    ..default()
+                })
+                .insert(ScoreTextTag);
+        });
+}
+
 fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut asset_server: ResMut<AssetServer>,
     mut score: ResMut<Score>,
     board: Res<BoardConfig>,
 ) {
@@ -259,6 +301,7 @@ fn spawn_board(
     commands.entity(left_dice).insert(BoardTag);
     commands.entity(right_dice).insert(BoardTag);
     commands.entity(ball).insert(BoardTag);
+    spawn_score_text(&mut commands, &mut asset_server, &score);
 }
 
 fn despawn_board(mut commands: Commands, entities: Query<Entity, With<BoardTag>>) {
@@ -275,6 +318,7 @@ fn next_round(
     mut ball: Query<(Entity, &mut Ball, &mut Transform)>,
     mut next_state: ResMut<NextState<GameState>>,
     mut last_winner: ResMut<LastWinner>,
+    mut score_text: Query<&mut Text, With<ScoreTextTag>>,
 ) {
     if let Some(PlayerLost { is_right }) = event_reader.iter().next() {
         if *is_right {
@@ -298,6 +342,8 @@ fn next_round(
             last_winner.player = Some(DiceKind::Right);
             next_state.set(GameState::GameOver)
         }
+        score_text.single_mut().sections[0].value = score.as_text();
+        event_reader.clear();
     }
 }
 

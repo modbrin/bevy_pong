@@ -10,7 +10,7 @@ use crate::main_menu::MainMenuPlugin;
 // v add game restart
 // v add delayed ball start
 // v add player lost screen
-// * add scores ui
+// v add scores ui
 // * add screen margin and fix window size
 // * add window scaling
 // * add ball loose effect
