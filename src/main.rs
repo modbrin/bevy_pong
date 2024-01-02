@@ -1,8 +1,11 @@
-use crate::game_over::GameOverPlugin;
 use bevy::prelude::*;
+use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
+use bevy::render::RenderPlugin;
 
+use crate::game_over::GameOverPlugin;
 use crate::gameplay::GameplayPlugin;
 use crate::main_menu::MainMenuPlugin;
+use crate::utils::*;
 
 // TODO
 // v bug: hit on dice can lead to ball leaking through wall
@@ -11,20 +14,18 @@ use crate::main_menu::MainMenuPlugin;
 // v add delayed ball start
 // v add player lost screen
 // v add scores ui
-// * add screen margin and fix window size
-// * add window scaling
-// * add ball loose effect
-// * add difficulty selector
+// ? add window scaling
+// ? add screen margin and fix window size
+// * add ball loose effect (scale down)
 // * add ai player
 // * add sound effects
 // * add mouse play mode
+// * add difficulty selector
 
 mod game_over;
 mod gameplay;
 mod main_menu;
 mod utils;
-
-use crate::utils::*;
 
 #[derive(Debug, Clone, Eq, Default, PartialEq, Hash, States)]
 pub enum GameState {
@@ -45,7 +46,25 @@ fn main() {
         .add_state::<GameState>()
         .insert_resource(LastWinner::default())
         .add_plugins((
-            DefaultPlugins,
+            DefaultPlugins
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(WgpuSettings {
+                        backends: Some(Backends::VULKAN),
+                        ..default()
+                    }),
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        resolution: (1100.0, 1000.0).into(),
+                        resize_constraints: WindowResizeConstraints {
+                            min_width: 1100.0,
+                            min_height: 1000.0,
+                            ..default()
+                        },
+                        ..default()
+                    }),
+                    ..default()
+                }),
             MainMenuPlugin,
             GameplayPlugin,
             GameOverPlugin,

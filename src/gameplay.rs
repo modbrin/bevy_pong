@@ -227,7 +227,7 @@ fn spawn_score_text(commands: &mut Commands, asset_server: &mut AssetServer, sco
         .spawn(NodeBundle {
             style: Style {
                 width: Val::Percent(100.0),
-                height: Val::Percent(40.0),
+                height: Val::Percent(15.0),
                 justify_content: JustifyContent::Center,
                 flex_direction: FlexDirection::Column,
                 ..default()
@@ -320,7 +320,7 @@ fn next_round(
     mut last_winner: ResMut<LastWinner>,
     mut score_text: Query<&mut Text, With<ScoreTextTag>>,
 ) {
-    if let Some(PlayerLost { is_right }) = event_reader.iter().next() {
+    if let Some(PlayerLost { is_right }) = event_reader.read().next() {
         if *is_right {
             score.left += 1;
         } else {
